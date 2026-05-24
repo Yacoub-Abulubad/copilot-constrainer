@@ -1,0 +1,69 @@
+name: Archive Scope File on PR Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+      - develop
+
+jobs:
+  archive-scope:
+    # Only run when the PR was actually merged (not just closed/abandoned)
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          # Check out the branch that was merged INTO (develop or main)
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
+      - name: Determine scope file name
+        id: scope
+        run: |
+          SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
+          # Sanitize: replace / with _
+          SANITIZED="${SOURCE_BRANCH//\//_}"
+          SCOPE_FILE="${SANITIZED}_SCOPE.md"
+          echo "branch=$SOURCE_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "sanitized=$SANITIZED" >> "$GITHUB_OUTPUT"
+          echo "scope_file=$SCOPE_FILE" >> "$GITHUB_OUTPUT"
+          echo "Scope file to archive: $SCOPE_FILE"
+
+      - name: Archive scope file (if it exists)
+        id: archive
+        run: |
+          SCOPE_FILE="${{ steps.scope.outputs.scope_file }}"
+          ARCHIVE_DIR="Archived_Branch_Scope"
+
+          if [ ! -f "$SCOPE_FILE" ]; then
+            echo "No scope file found for this branch ($SCOPE_FILE). Skipping."
+            echo "archived=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p "$ARCHIVE_DIR"
+
+          # Prefix with merge date so archived files sort chronologically
+          DATE=$(date +%Y-%m-%d)
+          DEST="${ARCHIVE_DIR}/${DATE}_${SCOPE_FILE}"
+
+          mv "$SCOPE_FILE" "$DEST"
+          echo "Moved $SCOPE_FILE → $DEST"
+          echo "archived=true" >> "$GITHUB_OUTPUT"
+          echo "dest=$DEST" >> "$GITHUB_OUTPUT"
+
+      - name: Commit archived scope file
+        if: steps.archive.outputs.archived == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Archived_Branch_Scope/
+          git rm --cached "${{ steps.scope.outputs.scope_file }}" 2>/dev/null || true
+          git commit -m "chore: archive scope file for ${{ steps.scope.outputs.branch }} [skip ci]"
+          git push origin ${{ github.event.pull_request.base.ref }}
